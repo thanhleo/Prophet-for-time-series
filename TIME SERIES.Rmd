@@ -1,0 +1,169 @@
+---
+title: "TIME SERIES WITH PROPHET"
+author: "Nguyen Minh Thanh - thanhleo92@gmail.com"
+date: "17 May 2018"
+output:
+  html_document:
+    code_folding: hide
+    fig_caption: yes
+    fig_width: 8
+    highlight: haddock
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+---
+
+<center>![](./Untitled.png)</center>
+
+# Introduction
+
+Most of us would have heard about the new buzz in the market i.e. Cryptocurrency. Many of us would have invested in their coins too. But, is investing money in such a volatile currency safe? How can we make sure that investing in these coins now would surely generate a healthy profit in the future? We can’t be sure but we can surely generate an approximate value based on the previous prices. Time series models is one way to predict them.
+
+In this article, I will talk about a new time series technique that was developed by Facebook named Prophet. Dataset is the credit card spending from January 2016 to April 2018 and I will try to forecast spending amount of credit card in May 2018
+
+# Prophet for time series
+
+I use a decomposable time series model with three main model components: trend, seasonality, and holidays. They are combined in the following equation:
+
+$y(t) = g(t) + s(t) + h(t) + Error(t)$
+
+- g(t): piecewise linear or logistic growth curve for modelling non-periodic changes in time series
+- s(t): periodic changes (e.g. weekly/yearly seasonality)
+- h(t): effects of holidays (user provided) with irregular schedules
+- Error(t): error term accounts for any unusual changes not accommodated by the model
+
+```{r, message=F, warning=F}
+library(dplyr)
+library(lubridate)
+library(magrittr)
+library(prophet)
+library(ggplot2)
+library(ggthemes)
+rm(list = ls())
+load(file = "D:/4. BA - R/1. TOPIC/49. CREDIT CARD SPENDING ANALYSIS/CREDIT CARD SPENDING ANALYSIS/Data/raw_data.Rda")
+raw_data %>% head
+```
+
+The dataset contains transactions of credit card users in many areas (called mcc categories), we need to forecast spending of every single mcc category before calculating the performance of the whole month
+
+```{r, message=F, warning=F}
+raw_data %>% 
+  group_by(yearmonth_new) %>% 
+  summarise(sum = round(sum(trans_amount_qd)/1e9,2)) %>% 
+  ggplot(aes(x = as.factor(yearmonth_new), y = sum, group = 1)) +
+  geom_line(col = "darkgreen") +
+  geom_point(col = "darkred") + 
+  geom_text(aes(label = sum), check_overlap = TRUE, vjust = -0.5) +
+  theme_economist() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +  
+  xlab("Timeline") +
+  ylab("Credit card spending amount (bil)") +
+  ggtitle("Credit card spending")
+```
+
+## Step 1
+
+Create credit card spending amount in each mcc category
+
+```{r, message=F, warning=F}
+load(file = "D:/4. BA - R/1. TOPIC/49. CREDIT CARD SPENDING ANALYSIS/CREDIT CARD SPENDING ANALYSIS/Data/Prophet_data.Rda")
+for (i in unique(raw_data$mcc_category)) {
+  df <- raw_data %>% 
+    filter(mcc_category == i) %>% 
+    group_by(date) %>% 
+    summarise(spending = round(sum(trans_amount_qd)/1e9,5)) %>% 
+    as.data.frame()
+  names(df)[1] <- "ds"
+  names(df)[2] <- "y"
+  df$y <- log(df$y)
+  df$mcc_category <- paste(i)
+  name <- paste(i)
+  df <- df %>% select(3,1,2)
+  assign(name, df)
+}
+```
+
+## Step 2
+
+Calculate performce of credit card in May of each mcc category using regression for logarithm value of credit card spending
+
+```{r, message=F, warning=F}
+list_of_dataframe <- list(FashionShopping, Travelline, Entertainment, HospitalMedical, 
+                          Departmentstores, Utilities, Dailyitems, Others,
+                          Cash, DinningDrinking, Education, Automotivemotorandbikesaleandservice,
+                          Electronic, HouseholdFurniture, Jewellery, Advertisingservices, Insurance,
+                          Fuel, TelephoneServiceEquipment, BeautySpa, Dutyfreetouristattraction, 
+                          Bookstoresnewsstationeryprinting, Realestate)
+
+final_result <- data.frame()
+
+for ( i in c(1:23)) {
+  df <- list_of_dataframe[[i]]
+  m <- prophet(df)
+  future <- make_future_dataframe(m, periods = 32)
+  forecast <- predict(m, future)
+  result <- forecast %>% 
+    mutate(spending = exp(1)^yhat) %>% 
+    tail(31) %>% 
+    summarise(predict = sum(spending)) %>% 
+    as.data.frame()
+  result$mcc_category <- unique(list_of_dataframe[[i]]$mcc_category)
+  final_result <- rbind(final_result, result)
+}
+
+final_result %<>% select(2,1)
+
+predict <- final_result %>% 
+  select(1,2) %>% 
+  mutate(year = 2018,
+         month = "05" %>% as.factor()) %>% 
+  select(1,3,4,2) %>% 
+  rename(mcc_category = mcc_category, 
+         year = year,
+         month = month,
+         spending = predict) %>% 
+  as.data.frame()
+
+mcc_spending <- raw_data %>% 
+  mutate(year = year(date),
+         month = month(date)) %>% 
+  mutate(month = case_when(
+    month == 1 ~ "01",
+    month == 2 ~ "02",
+    month == 3 ~ "03",
+    month == 4 ~ "04",
+    month == 5 ~ "05",
+    month == 6 ~ "06",
+    month == 7 ~ "07",
+    month == 8 ~ "08",
+    month == 9 ~ "09",
+    month == 10 ~ "10",
+    month == 11 ~ "11",
+    month == 12 ~ "12"
+  ) %>% as.factor) %>% 
+  group_by(mcc_category, year, month) %>% 
+  summarise(spending = round(sum(trans_amount_qd)/1e9,5)) %>% 
+  as.data.frame()
+
+mcc_spending <- rbind(mcc_spending, predict)
+mcc_spending %>% 
+  mutate(yearmonth = paste(year,month, sep = "") %>% as.factor()) %>% 
+  group_by(yearmonth) %>% 
+  summarise(spending = sum(spending)) %>% 
+  ggplot(aes(x = as.factor(yearmonth), y = spending, group = 1)) +
+  geom_line(col = "darkgreen") +
+  geom_point(col = "darkred") + 
+  geom_text(aes(label = round(spending,2)), check_overlap = TRUE, vjust = -0.5) +
+  theme_economist() +
+  xlab("Timeline") +
+  ylab("Credit card spending amount (bil)") +
+  ggtitle("Spending per transaction since 2017")
+```
+
+After using prophet for time series forecast, we can see that credit card spending in May 2018 reach more than 3000 billion VND
+
+
+
+
+
